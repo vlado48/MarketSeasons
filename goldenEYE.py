@@ -1,303 +1,150 @@
 import csv
 import matplotlib.pyplot as plt
 import datetime as dt
-from statsmodels.graphics import tsaplots
-from statsmodels.tsa.holtwinters import ExponentialSmoothing
 import numpy as np
+import pandas as pd
 import scipy.stats as stats
-import os
+from statsmodels.tsa.seasonal import STL
 
+
+# Before creating dataframe it will be easier to align data in lists/np in a 
+# way that each year has same amount of trading days and that they are syncho-
+# zed
 with open('euro-fx-futures.csv') as file_raw:
-    file = csv.reader(file_raw, delimiter=',')
-    file = list(file)
+    data_raw = csv.reader(file_raw, delimiter=',')
+    data_raw = list(data_raw)
+data_raw = data_raw[17:]    # Remove header
 
-# cut header
-file = file[17:]
+# Split data by year into 2 dimensional np array by year. Only full years are
+# considered
+yearly_split = []
+year_start = 0
+last_idx = len(data_raw) - 1
+for i, row in enumerate(data_raw):
+    row[0] = dt.date.fromisoformat(row[0])         # Date to datetime object
+    if i != 0:                                     # Avoid index OOR error
+        if row[0].year != data_raw[i-1][0].year:   # Current entry is new year
+            yearly_split.append(data_raw[year_start:i])
+            year_start = i
 
-# split data by year
-yearly = []
-start = 0
-for i, row in enumerate(file):
-    row[0] = dt.date.fromisoformat(row[0])  #Change to datetime object
-    if i != 0:
-        if row[0].year != file[i-1][0].year:   #See if year changed
-            yearly.append(file[start:i])
-            start = i
+# We need to align all the years around some date for consistency. Middle of
+# the year (1. July) will be our centering date from which each year must have 
+# same amount of days prior and after.
 
-# Create list of day differences of each year wrt midyear date
+# For each year find the index closest to 1. July (centering date)
 midyear_idx = []
-for year in yearly: 
-    midyear = dt.date(year[0][0].year, 7, 1)
-    midyear_d = dt.timedelta(days=365)
+for year in yearly_split: 
+    midyear = dt.date(year[0][0].year, 7, 1)    # Define 1.7 of given year
+    midyear_d = dt.timedelta(days=365)          # Define max time delta
     closest = None
-    for i, day in enumerate(year):
-       if abs(day[0]-midyear) < midyear_d:
+    for i, day in enumerate(year):              # For each day update delta
+       if abs(day[0]-midyear) < midyear_d:      # if less than before
            midyear_d = abs(day[0]-midyear)
            index = i
     midyear_idx.append(index)
 
-# Adjust arrays of each year so that they are aligned at midyear by deleting 
-# first days of years that have longer first half 
-midyear_min = min(midyear_idx)
-for i, year in enumerate(midyear_idx):
-    delta = year-midyear_min
-    if delta != 0:
-        for j in range(delta):
-            del yearly[i][0]
-
-
-shortest_yr = 365            
-for year in yearly:
-    if len(year) < shortest_yr:
-        shortest_yr = len(year)    
-
-for year in yearly:
-    delta = len(year)-shortest_yr
-    for i in range(delta):
-        del year[-1]
-
-dates = []
-prices = []
-for year in yearly:
-    d, p = zip(*year)
-    dates.append(d)
-    p = list(p)
-    p = [float(i) for i in p]
-    prices.append(p)
-#%%
-    
-# Normalizes in such manner that first datapoint is 0, has negative values
-def normalize1(inp_data):
-    data = list(inp_data)
-    bot = min(data)
-    top = max(data)
-    price_range = top - bot
-    normal_tick = 100 / price_range # % per pip
-    zero = data[0]
-    for i, val in enumerate(data):
-        val = (val - zero) * normal_tick
-        if val == 0:
-            val += 0.01 
-        data[i] = val
-    return data
-
-# Normalizes such that lowest value is 0, has no negative values
-def normalize(inp_data):
-    data = list(inp_data)
-    bot = min(data)
-    top = max(data)
-    price_range = top - bot
-    normal_tick = 100 / price_range # % per pip
-    for i, val in enumerate(data):
-        val = (val - bot) * normal_tick
-        if val == 0:
-            val += 0.01 
-        data[i] = val
-    return data
-
-# Detrends the data based on ExponentialSmoothing model
-def debase(inp_data, trend, dampen, alpha, beta):
-    data = list(inp_data)
-    model = ExponentialSmoothing(data, trend = trend, damped_trend=dampen, seasonal=None)
-    fit = model.fit(smoothing_level = alpha, smoothing_trend = beta)   
-    prediction = fit.predict(0, len(data))
-    #plt.plot(prediction)
-    #plt.plot(data)
-    for i, val in enumerate(data):
-        data[i] = data[i] - prediction[i]
-    return data
-
-# Calculates correlation goodness
-def corel(data1, data2):
-    c1, p1 = stats.pearsonr(data1, data2)
-    c2, p2 = stats.spearmanr(data1, data2)
-    c3 = stats.kendalltau(data1, data2)[0]
-    p3 = stats.kendalltau(data1, data2)[1] 
-    return c1*(1-p1), c2*(1-p2), c3*(1-p3)
-
-
-def mutualcorel(inp_data, mode):
-    corels = []
-    # Return correlation sum for each dataset with other datasets
-    for i, data in enumerate(inp_data):
-        p = s = k = 0
-        for j in range(0, i):
-            p_res, s_res, k_res = corel(data, inp_data[j])
-            p += p_res
-            s += s_res
-            k += k_res
-        for j in range(i, len(inp_data)):
-            if j == i:
-                continue
-            p_res, s_res, k_res = corel(data, inp_data[j])
-            p += p_res
-            s += s_res
-            k += k_res
-        corels.append([p, s, k])
-    
-    # Return total sum of correlations
-    if mode == 'sum':
-        temp = [0, 0, 0]
-        for year in corels:
-            temp[0] += year[0]
-            temp[1] += year[1]
-            temp[2] += year[2]
-        temp = [val/len(corels) for val in temp]
-        return temp    
-    else:   
-        return corels
-
-
-# correlation of yearly prices and calculated seasonal tendencies
-def mutualcorel2(seasonal, prices):
-    results = []
-    for i, data in enumerate(prices):
-        res = list(corel(data, seasonal))
-        results.append(res)    
-#    plt.figure()
-#    plt.plot(results)
-    pozit = []    
-    for i in range (3):                     #For each type of calculated correlation 
-        pos = 0
-        for k, res in enumerate(results):   # Iterate all years results for given correlation type
-            if res[i]>0:
-                pos += 1              # Count each positive correlation
-            if k == 0:      
-                best = [res[i], k]    # First iterable set as best
-            elif res[i] > best[0]:
-                best = [res[i], k]    # Become best if better
-        pozit.append(pos)        
-        results[best[1]][i] /= 2        #devides largest correlation
+# Find minimal N of days before and after midyear across all the years
+shortest_1 = np.inf
+shortest_2 = np.inf
+for i, year in enumerate(yearly_split):
+    days_before = len(year[0:midyear_idx[i]])
+    if days_before < shortest_1:
+        shortest_1 = days_before
         
-    p, s, r = zip(*results)
-    p = sum(p)/len(prices)*((pozit[0])/len(prices))
-    s = sum(s)/len(prices)*((pozit[1])/len(prices))
-    r = sum(r)/len(prices)*((pozit[2])/len(prices))
+    days_after = len(year[midyear_idx[i]+1:])
+    if days_after < shortest_2:
+        shortest_2 = days_after
+        
+# Cut the lengths of all the longer years, separate timestamps
+for i, year in enumerate(yearly_split):
+    start_idx = midyear_idx[i] - shortest_1
+    end_idx = midyear_idx[i] + shortest_2 + 1
+    yearly_split[i] = year[start_idx : end_idx]
+yearly_split = np.array(yearly_split)    # Turn into np array  
 
-    #return p, s, r
-    return pozit[0], pozit[1], pozit[2], 
+dates = yearly_split[:, :, 0]
+yearly_split = yearly_split[:, :, 1].astype(float)
+data_array = (yearly_split.flatten())
 
-def average(data, alfa, beta):
-    prices_debased = []
-    for i, price in enumerate(data):
-        d = debase(price, 'add', True, alfa, beta)
-        n = normalize1(d)       
-        prices_debased.append(n)
-    for i, price in enumerate(prices_debased):
-        if i != 0:
-            for j, val in enumerate(price):
-                debased_avg[j] += val 
-        else:
-            debased_avg = price
-           
-    debased_avg = [i/len(prices_debased) for i in debased_avg]
-    return debased_avg
+# We have dataset of 21 years, each having 248 trading days  
+columns = np.arange(1999, 2020)
+data = pd.DataFrame(data=yearly_split.T, columns=columns)
+print(data.head(5))
+print('Total shape of dataframe: ', data.shape)
+data.plot()
+plt.xlabel('Trade day of a year')
+plt.ylabel('Price USD')
 
-#%% Optimize based on TS and all years total corellation
-def optimize(prices, alpha_steps, alpha_range, beta_steps, beta_range):
-    for i in range(alpha_steps):
-        alpha = alpha_range[0] + i * (alpha_range[1]-alpha_range[0])/(alpha_steps-1)
-        for j in range(beta_steps):
-            beta = beta_range[0] + j * (beta_range[1]-beta_range[0])/(beta_steps-1)         
-            avg = average(prices, alpha, beta)
-            if i == 0 and j==0:
-                b1, b2, b3 = mutualcorel2(avg, prices)
-                s1 = s2 = s3 = [alpha, beta, trend, dampen]
-            else:
-                r1, r2, r3 = mutualcorel2(avg, prices)         
-                if r1>b1:
-                    b1 = r1
-                    s1 = [alpha, beta, trend, dampen]
-                if r2>b2:
-                    b2 = r2
-                    s2 = [alpha, beta, trend, dampen]
-                if r3>b3:
-                    b3 = r3
-                    s3 = [alpha, beta, trend, dampen]      
-    print(b1, s1, b2, s2, b3, s3)
+#%% Conduct seasonal and trend decomposition. Parameters are currently based on
+#   domain knowledge and empirical testing.
+stl = STL(data_array, period=249, seasonal=11, robust=False,
+                 trend=251)
+result_stl = stl.fit()
+result_stl.plot()
+seasonals_array = result_stl.seasonal.reshape((21, 248))
+seasonals = pd.DataFrame(data=seasonals_array.T, columns=columns)
 
-optimize(prices, 20, (0, 0.25), 20, (0, 0.25))
-
-#%% Optimal values based on TS and all prices corellation
-
-plt.ion()
-#plt.plot(normalize(average(prices[:10], 0.013157894736842105, 0.02631578947368421)))
-#plt.plot(normalize(average(prices[10:15], 0.013157894736842105, 0.02631578947368421)))
-plt.plot(normalize(average(prices[15:], 0.013157894736842105, 0.02631578947368421)))
-
-#%% Optimisation based on predictive power (5Y ST applied to a year ahead)
-def walkforward(prices, lookback, lookforward, alpha_steps, alpha_range, beta_steps, beta_range):
-    this_run = []
-    for i in range(alpha_steps):
-        alpha = alpha_range[0] + i * (alpha_range[1]-alpha_range[0])/(alpha_steps-1)
-        subresults = []
-        for j in range(beta_steps):
-            beta = beta_range[0] + j * (beta_range[1]-beta_range[0])/(beta_steps-1)                     
-            this_set = []
-            for k in range(len(prices)-lookback-lookforward+1):       #For all years possible to lookforward w given lookback
-                avg = average(prices[k:k+lookback], alpha, beta)
-                result = 0
-                for l in range(lookforward):                # For the number of lookforward years
-                    result += np.array(corel(prices[k+lookback+l], avg))
-                this_set.append(result[1])                  # Only use second correlation score
-            subresults.append(np.array(this_set))
-        this_run.append(np.array(subresults))
-    return np.array(this_run)
-
-
-#%% Score the walk forwards results
-def walk_score(data, method):
-    score = []
-    if method == 'sum':    #average
-        for run in data:
-            b_score = []
-            for sub in run:
-                b_score.append(np.sum(sub))
-            score.append(np.array([b/len(sub) for b in b_score]))
-        return np.array(score)
+#%% To have a statistically more reliable seasonal dependencies we can average
+#   them. However to capture slow macroeconomic changes we may want to average
+#   only past few years with more weigth given to more recent years.
+#   Create exponential moving average from yearly seasonal tendencies
+def get_ema_df(data, order=5, alpha=0.08):
+    n_cols = data.shape[1]
+    n_rows = data.shape[0]
+    if n_cols < order:
+        raise ValueError('Data must have at least as many columns '
+                         'as is the order of EMA')    
     
-    if method == 'pos':    #num of positive correlation scores
-        for run in data:
-            b_score = []
-            for sub in run:
-                pos = 0
-                for val in sub:
-                    if val > 0:
-                        pos += 1                
-                b_score.append(pos/len(sub))
-            score.append(np.array(b_score))
-        return np.array(score)
+    # Create array of coeffecients / weigths
+    coeffs = np.array([1])
+    for i in range(1, order):
+        coeffs = np.append(coeffs, (1 - alpha)**i)
+    coeffs = np.flip(coeffs)
+
+    # Create a df of EMAs 
+    n_emas = n_cols - order + 1             # Number of EMA columns
+    emas = np.zeros((n_emas, n_rows))       # Initialize 2D array for EMAs  
+    for i in range(n_emas):
+        ema = np.zeros(n_rows)
+        for j, col in enumerate(data.iloc[:, i:(i+order)]):
+            print(col, ' ', coeffs[j])
+            ema += data[col] * coeffs[j]    # Add up weighted years
+        emas[i] = ema                       # Save as col in np array
+    emas = pd.DataFrame(emas.T, columns=data.columns[order-1:])
+    return emas
+
+# Get exponential average of seasonal tendecies and plot them to see change 
+# over time
+def plot_emas(emas):
+    for i, col in enumerate(emas):
+        n_cols = emas.shape[1]   
+        n_rows = data.shape[0]        
+        color = 'C1' if i != n_cols-1 else 'red'
+        emas[col].plot(color=color, alpha= 0.75**(n_cols-i))
+        
+    # Calculate relative month starts
+    month = n_rows // 12
+    leftover_days = n_rows - month * 12
+    print(leftover_days)
+    leftover = n_rows % 12
+    period = np.abs(leftover - 1) // leftover + \
+            (2 if np.abs(leftover - 1) // leftover == 0 else 1)
     
-    if method == 'neg':    #average negative correlation (1-neg) higher better
-        for run in data:
-            b_score = []
-            for sub in run:
-                neg_sum = 0
-                for val in sub:
-                    if val < 0:
-                        neg_sum += val  
-                b_score.append(1 + neg_sum/len(sub))
-            score.append(b_score)
-        return np.array(score)
+    lbl_idx = [(i+1)*month + ((i+period)//period) + 1 for i in range(12)]
+    lbl_idx.pop()
+    lbl_idx.insert(0, 0)
+    months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug',
+              'Sep', 'Oct', 'Nov', 'Dec']
+    plt.xticks(lbl_idx, months)    
+    
+emas = get_ema_df(seasonals)
+plot_emas(emas)        
+
 #%%
-optimr = walkforward(prices, 5, 2, 10, (0, 1), 10, (0, 1))
-
-print(optimr.shape)
-#%%
-
-a = walk_score(optimr, 'sum')
-b = walk_score(optimr, 'pos')
-c = walk_score(optimr, 'neg')
-
-plt.imshow(a, cmap='hot', interpolation='nearest')
-plt.figure()
-plt.imshow(b, cmap='hot', interpolation='nearest')
-plt.figure()
-plt.imshow(c, cmap='hot', interpolation='nearest')
+leftover = 0.8
+print(np.abs(leftover - 1) // leftover + (2 if np.abs(leftover - 1) // leftover == 0 else 1))
 
 
-#%% Optimising the LB, LF periods
-def walk_optim(prices, lbrange, lfrange, alpha_steps, alpha_range, beta_steps, beta_range):
-    for i in range(lbrange[0], lbrange[1]+1):
-        lb = lbrange[0] + i * (alpha_range[1]-alpha_range[0])/(alpha_steps-1)
-        for j in range(lfrange[0], lfrange[1]+1):
+
+
+
