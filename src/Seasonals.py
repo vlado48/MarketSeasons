@@ -4,6 +4,7 @@ import datetime as dt
 import numpy as np
 import pandas as pd
 from statsmodels.tsa.seasonal import STL
+from sklearn.preprocessing import MinMaxScaler
 
 
 # Before creating dataframe it will be easier to align data in lists/np in a 
@@ -46,18 +47,18 @@ for year in yearly_split:
 # the maximum should be (~130)
 def get_year_range(yearly_split):
     print('new fun')
-    limits = [np.inf, np.inf]        # N of days before/after midyear
-    shortest_years = [0, 0]          # idx of shortest year/years
+    limits = [np.inf, np.inf]          # N of days before/after midyear
+    shortest_years = [0, 0]            # idx of shortest year/years
     for i, year in enumerate(yearly_split):
         days_before = len(year[0:midyear_idx[i]])
         if days_before < limits[0]:
-            limits[0] = days_before
-            shortest_years[0] = (i)
+            limits[0] = days_before    # Least days period midyear across data
+            shortest_years[0] = (i)    # IDX of the shortest year
             
         days_after = len(year[midyear_idx[i]+1:])
         if days_after < limits[1]:
-            limits[1] = days_after
-            shortest_years[1] = (i)
+            limits[1] = days_after     # Least days after midyear across data
+            shortest_years[1] = (i)    # IDX of the shortest year
     
     # If some of the shortest years in dataset are much shorter than maximum 
     # (~130), We need to ommit it from the dataset
@@ -66,9 +67,9 @@ def get_year_range(yearly_split):
             print(f'Year {yearly_split[shortest_years[i]][0][0].year} only',
                   f' has {days} trading days before/after the midyear',
                   '\n    - deleting from the dataset')
-            yearly_split.pop(shortest_years[i])
-            midyear_idx.pop(shortest_years[i])
-            limits = get_year_range(yearly_split)
+            yearly_split.pop(shortest_years[i])      # Delete year too short
+            midyear_idx.pop(shortest_years[i])       # Delete it's IDX 
+            limits = get_year_range(yearly_split)    # Recursive function call
             break
 
     return limits
@@ -80,7 +81,7 @@ for i, year in enumerate(yearly_split):
     start_idx = midyear_idx[i] - yearly_range[0]
     end_idx = midyear_idx[i] + yearly_range[1] + 1
     yearly_split[i] = year[start_idx : end_idx]
-yearly_split = np.array(yearly_split)    # Turn into np array  
+yearly_split = np.array(yearly_split)                # Turn into np array  
 
 # Separate timestamps, hold first and last year of entire historical range,
 # flatten all data to conduct time series decomposition
@@ -141,9 +142,9 @@ def get_ema_df(data, order=5, alpha=0.08):
 # Get exponential average of seasonal tendecies and plot them to see change 
 # over time
 def plot_emas(emas):
-    for i, col in enumerate(emas):
-        n_cols = emas.shape[1]   
-        n_rows = emas.shape[0]       
+    n_cols = emas.shape[1]   
+    n_rows = emas.shape[0]   
+    for i, col in enumerate(emas):    
         color = 'C1' if i != n_cols-1 else 'red'
         emas[col].plot(color=color, alpha= 0.75**(n_cols-i))
         
@@ -169,6 +170,39 @@ plot_emas(emas)
 #%% Save the Seasonal EMAs dataframe as csv
 emas.to_csv("data\\usdx_seasonal_emas.csv")
 
+#%%
+def score_seasonals(emas):
+    data = emas.copy()    # Work on copy
+    scaler = MinMaxScaler((-1, 1))   
+    # Scale all the columns to -1/1 range
+    for i, col in enumerate(data):  
+        data[col] = scaler.fit_transform(data[col].values.reshape(-1,1))
+    
+    # Calculate MAPE        
+    yearly_mape = []
+    for i, col in enumerate(data):         
+        if i == 0: continue    # Skip first column
+        diff = (data.iloc[:, i] - data.iloc[:, i-1]) / data.iloc[:, i]
+        diff = diff.abs()
+        MAPE = diff.mean()
+        yearly_mape.append(MAPE)
+    
+    # Turn to ndarray and remove outliers (2008 crash)
+    yearly_mape = np.array(yearly_mape)
+    mean = yearly_mape.mean()
+    for i, entry in enumerate(yearly_mape):
+        if entry > 10 * mean:
+            print(f' Deleting MAPE of {entry:.2f} that is much higher than avg ',
+                  f'\n{mean:.2f}. Year: {data.columns[i]}')
+            yearly_mape = np.delete(yearly_mape, i)
+            
+    # Return total error for all other years        
+    return yearly_mape.sum()         
+   
+#%%
+print(score_seasonals(emas))
+
+#%%
 
 
 
