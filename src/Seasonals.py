@@ -3,14 +3,13 @@ import matplotlib.pyplot as plt
 import datetime as dt
 import numpy as np
 import pandas as pd
-import scipy.stats as stats
 from statsmodels.tsa.seasonal import STL
 
 
 # Before creating dataframe it will be easier to align data in lists/np in a 
 # way that each year has same amount of trading days and that they are syncho-
 # zed
-with open('euro-fx-futures.csv') as file_raw:
+with open('data\\usdx_historical.csv') as file_raw:
     data_raw = csv.reader(file_raw, delimiter=',')
     data_raw = list(data_raw)
 data_raw = data_raw[17:]    # Remove header
@@ -43,31 +42,55 @@ for year in yearly_split:
            index = i
     midyear_idx.append(index)
 
-# Find minimal N of days before and after midyear across all the years
-shortest_1 = np.inf
-shortest_2 = np.inf
+# Find minimum num. of days before and after midyear across all the years
+# the maximum should be (~130)
+def get_year_range(yearly_split):
+    print('new fun')
+    limits = [np.inf, np.inf]        # N of days before/after midyear
+    shortest_years = [0, 0]          # idx of shortest year/years
+    for i, year in enumerate(yearly_split):
+        days_before = len(year[0:midyear_idx[i]])
+        if days_before < limits[0]:
+            limits[0] = days_before
+            shortest_years[0] = (i)
+            
+        days_after = len(year[midyear_idx[i]+1:])
+        if days_after < limits[1]:
+            limits[1] = days_after
+            shortest_years[1] = (i)
+    
+    # If some of the shortest years in dataset are much shorter than maximum 
+    # (~130), We need to ommit it from the dataset
+    for i, days in enumerate(limits):
+        if days < 120:
+            print(f'Year {yearly_split[shortest_years[i]][0][0].year} only',
+                  f' has {days} trading days before/after the midyear',
+                  '\n    - deleting from the dataset')
+            yearly_split.pop(shortest_years[i])
+            midyear_idx.pop(shortest_years[i])
+            limits = get_year_range(yearly_split)
+            break
+
+    return limits
+
+yearly_range = get_year_range(yearly_split)
+
+# Cut the lengths of all the longer years
 for i, year in enumerate(yearly_split):
-    days_before = len(year[0:midyear_idx[i]])
-    if days_before < shortest_1:
-        shortest_1 = days_before
-        
-    days_after = len(year[midyear_idx[i]+1:])
-    if days_after < shortest_2:
-        shortest_2 = days_after
-        
-# Cut the lengths of all the longer years, separate timestamps
-for i, year in enumerate(yearly_split):
-    start_idx = midyear_idx[i] - shortest_1
-    end_idx = midyear_idx[i] + shortest_2 + 1
+    start_idx = midyear_idx[i] - yearly_range[0]
+    end_idx = midyear_idx[i] + yearly_range[1] + 1
     yearly_split[i] = year[start_idx : end_idx]
 yearly_split = np.array(yearly_split)    # Turn into np array  
 
+# Separate timestamps, hold first and last year of entire historical range,
+# flatten all data to conduct time series decomposition
 dates = yearly_split[:, :, 0]
 yearly_split = yearly_split[:, :, 1].astype(float)
-data_array = (yearly_split.flatten())
+history_range = (dates[0][0].year, dates[-1][0].year)   
+data_array = yearly_split.flatten()
 
-# We have dataset of 21 years, each having 248 trading days  
-columns = np.arange(1999, 2020)
+# Create dataframe with appropriate column names
+columns = np.arange(history_range[0], history_range[1]+1)
 data = pd.DataFrame(data=yearly_split.T, columns=columns)
 print(data.head(5))
 print('Total shape of dataframe: ', data.shape)
@@ -75,13 +98,17 @@ data.plot()
 plt.xlabel('Trade day of a year')
 plt.ylabel('Price USD')
 
+# Cache length of historical data and length of a year
+n_cols = data.shape[1]
+n_rows = data.shape[0]
+
 #%% Conduct seasonal and trend decomposition. Parameters are currently based on
 #   domain knowledge and empirical testing.
 stl = STL(data_array, period=249, seasonal=11, robust=False,
                  trend=251)
 result_stl = stl.fit()
 result_stl.plot()
-seasonals_array = result_stl.seasonal.reshape((21, 248))
+seasonals_array = result_stl.seasonal.reshape((n_cols, n_rows))
 seasonals = pd.DataFrame(data=seasonals_array.T, columns=columns)
 
 #%% To have a statistically more reliable seasonal dependencies we can average
@@ -89,8 +116,6 @@ seasonals = pd.DataFrame(data=seasonals_array.T, columns=columns)
 #   only past few years with more weigth given to more recent years.
 #   Create exponential moving average from yearly seasonal tendencies
 def get_ema_df(data, order=5, alpha=0.08):
-    n_cols = data.shape[1]
-    n_rows = data.shape[0]
     if n_cols < order:
         raise ValueError('Data must have at least as many columns '
                          'as is the order of EMA')    
@@ -118,18 +143,19 @@ def get_ema_df(data, order=5, alpha=0.08):
 def plot_emas(emas):
     for i, col in enumerate(emas):
         n_cols = emas.shape[1]   
-        n_rows = data.shape[0]        
+        n_rows = emas.shape[0]       
         color = 'C1' if i != n_cols-1 else 'red'
         emas[col].plot(color=color, alpha= 0.75**(n_cols-i))
         
-    # Calculate relative month starts
-    month = n_rows // 12
-    leftover_days = n_rows - month * 12
-    print(leftover_days)
-    leftover = n_rows % 12
+    # Calculate relative month starts (corresponding indexes)
+    month = n_rows // 12             # Ideal month length          
+    leftover = (n_rows % 12) / 12    # Days left over per month
+
+    # Calculate per how many months an extra day should be added
     period = np.abs(leftover - 1) // leftover + \
-            (2 if np.abs(leftover - 1) // leftover == 0 else 1)
-    
+             (2 if (np.abs(leftover - 1) // leftover == 0) else 1)
+
+    # Calculate the indexes of month starts, assuming Jan starts with extra day
     lbl_idx = [(i+1)*month + ((i+period)//period) + 1 for i in range(12)]
     lbl_idx.pop()
     lbl_idx.insert(0, 0)
@@ -140,9 +166,9 @@ def plot_emas(emas):
 emas = get_ema_df(seasonals)
 plot_emas(emas)        
 
-#%%
-leftover = 0.8
-print(np.abs(leftover - 1) // leftover + (2 if np.abs(leftover - 1) // leftover == 0 else 1))
+#%% Save the Seasonal EMAs dataframe as csv
+emas.to_csv("data\\usdx_seasonal_emas.csv")
+
 
 
 
