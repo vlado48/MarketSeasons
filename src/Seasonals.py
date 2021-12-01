@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from statsmodels.tsa.seasonal import STL
 from sklearn.preprocessing import MinMaxScaler
-
+from itertools import product
 
 # Before creating dataframe it will be easier to align data in lists/np in a 
 # way that each year has same amount of trading days and that they are syncho-
@@ -88,7 +88,7 @@ yearly_split = np.array(yearly_split)                # Turn into np array
 dates = yearly_split[:, :, 0]
 yearly_split = yearly_split[:, :, 1].astype(float)
 history_range = (dates[0][0].year, dates[-1][0].year)   
-data_array = yearly_split.flatten()
+
 
 # Create dataframe with appropriate column names
 columns = np.arange(history_range[0], history_range[1]+1)
@@ -99,24 +99,29 @@ data.plot()
 plt.xlabel('Trade day of a year')
 plt.ylabel('Price USD')
 
-# Cache length of historical data and length of a year
-n_cols = data.shape[1]
-n_rows = data.shape[0]
 
-#%% Conduct seasonal and trend decomposition. Parameters are currently based on
-#   domain knowledge and empirical testing.
-stl = STL(data_array, period=249, seasonal=11, robust=False,
-                 trend=251)
-result_stl = stl.fit()
-result_stl.plot()
-seasonals_array = result_stl.seasonal.reshape((n_cols, n_rows))
-seasonals = pd.DataFrame(data=seasonals_array.T, columns=columns)
+    #%% Conduct seasonal and trend decomposition. Parameters are currently based on
+    #   domain knowledge and empirical testing.
+def get_seasonals(data_frame, **kwargs):
+    ''', period=249, seasonal=11, trend = 251,
+                  robust=False, **kwargs'''
+    n_cols = data_frame.shape[1]
+    n_rows = data_frame.shape[0]
+    data_array = data_frame.to_numpy().T.flatten()
+    stl = STL(data_array, **kwargs)
+    result_stl = stl.fit()
+#   result_stl.plot()
+    seasonals_array = result_stl.seasonal.reshape((n_cols, n_rows))
+    seasonals = pd.DataFrame(data=seasonals_array.T, columns=columns)
+    return seasonals
 
-#%% To have a statistically more reliable seasonal dependencies we can average
+#   To have a statistically more reliable seasonal dependencies we can average
 #   them. However to capture slow macroeconomic changes we may want to average
 #   only past few years with more weigth given to more recent years.
 #   Create exponential moving average from yearly seasonal tendencies
 def get_ema_df(data, order=5, alpha=0.08):
+    n_cols = data.shape[1]
+    n_rows = data.shape[0]    
     if n_cols < order:
         raise ValueError('Data must have at least as many columns '
                          'as is the order of EMA')    
@@ -133,7 +138,6 @@ def get_ema_df(data, order=5, alpha=0.08):
     for i in range(n_emas):
         ema = np.zeros(n_rows)
         for j, col in enumerate(data.iloc[:, i:(i+order)]):
-            print(col, ' ', coeffs[j])
             ema += data[col] * coeffs[j]    # Add up weighted years
         emas[i] = ema                       # Save as col in np array
     emas = pd.DataFrame(emas.T, columns=data.columns[order-1:])
@@ -144,6 +148,7 @@ def get_ema_df(data, order=5, alpha=0.08):
 def plot_emas(emas):
     n_cols = emas.shape[1]   
     n_rows = emas.shape[0]   
+    plt.figure()
     for i, col in enumerate(emas):    
         color = 'C1' if i != n_cols-1 else 'red'
         emas[col].plot(color=color, alpha= 0.75**(n_cols-i))
@@ -163,26 +168,26 @@ def plot_emas(emas):
     months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug',
               'Sep', 'Oct', 'Nov', 'Dec']
     plt.xticks(lbl_idx, months)    
-    
+'''
+seasonals = get_seasonals(data)    
 emas = get_ema_df(seasonals)
 plot_emas(emas)        
-
-#%% Save the Seasonal EMAs dataframe as csv
-emas.to_csv("data\\usdx_seasonal_emas.csv")
+'''
 
 #%%
 def score_seasonals(emas):
-    data = emas.copy()    # Work on copy
+    # Scale all the whole data set to -1/1 range
     scaler = MinMaxScaler((-1, 1))   
-    # Scale all the columns to -1/1 range
-    for i, col in enumerate(data):  
-        data[col] = scaler.fit_transform(data[col].values.reshape(-1,1))
-    
+    original_shape = emas.shape
+    scaled = scaler.fit_transform(emas.to_numpy().flatten().reshape(-1, 1))
+    scaled = pd.DataFrame(scaled.reshape(original_shape),
+                          columns=emas.columns)
+
     # Calculate MAPE        
     yearly_mape = []
-    for i, col in enumerate(data):         
+    for i, col in enumerate(scaled):         
         if i == 0: continue    # Skip first column
-        diff = (data.iloc[:, i] - data.iloc[:, i-1]) / data.iloc[:, i]
+        diff = (scaled.iloc[:, i] - scaled.iloc[:, i-1]) / scaled.iloc[:, i]
         diff = diff.abs()
         MAPE = diff.mean()
         yearly_mape.append(MAPE)
@@ -193,18 +198,42 @@ def score_seasonals(emas):
     for i, entry in enumerate(yearly_mape):
         if entry > 10 * mean:
             print(f' Deleting MAPE of {entry:.2f} that is much higher than avg ',
-                  f'\n{mean:.2f}. Year: {data.columns[i]}')
+                  f'\n{mean:.2f}. Year: {scaled.columns[i]}')
             yearly_mape = np.delete(yearly_mape, i)
             
     # Return total error for all other years        
-    return yearly_mape.sum()         
+    return yearly_mape.mean()         
    
 #%%
-print(score_seasonals(emas))
+# Set of parmeters
+params = {'period'       : [249],
+          'seasonal'     : list(range(7, 56, 4)),
+          'trend'        : list(range(251, 351, 20)),
+          'robust'       : [False, True],
+          'low_pass'     : list(range(251, 351, 20)),
+          'seasonal_deg' : [0, 1],
+          'trend_deg'    : [0, 1],
+          'low_pass_deg' : [0, 1]}
+                           
+def param_iterate(params):
+    keys = params.keys()
+    vals = params.values()
+    combinations = list(product(*vals))
+    for i, c in enumerate(combinations):
+        combinations[i] = dict(zip(keys, c))
+    return combinations    
+    
+params_combinations = param_iterate(params)
+total_iters = len(params_combinations)
+scores = []
+for i, c in enumerate(params_combinations):
+    print(i+1,'/',total_iters)
+    seasonals = get_seasonals(data,**c)    
+    emas = get_ema_df(seasonals)
+    score = score_seasonals(emas)
+    print(score)
+    scores.append(score)
 
 #%%
-
-
-
-
-
+scores_series = pd.Series(scores, name='scores')
+scores_series.to_csv('data\\optimisation_scores.csv')
