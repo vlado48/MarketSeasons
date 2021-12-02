@@ -1,118 +1,20 @@
-import csv
 import matplotlib.pyplot as plt
-import datetime as dt
 import numpy as np
 import pandas as pd
 from statsmodels.tsa.seasonal import STL
-from sklearn.preprocessing import MinMaxScaler
-from itertools import product
-
-# Before creating dataframe it will be easier to align data in lists/np in a 
-# way that each year has same amount of trading days and that they are syncho-
-# zed
-with open('data\\usdx_historical.csv') as file_raw:
-    data_raw = csv.reader(file_raw, delimiter=',')
-    data_raw = list(data_raw)
-data_raw = data_raw[17:]    # Remove header
-
-# Split data by year into 2 dimensional np array by year. Only full years are
-# considered
-yearly_split = []
-year_start = 0
-last_idx = len(data_raw) - 1
-for i, row in enumerate(data_raw):
-    row[0] = dt.date.fromisoformat(row[0])         # Date to datetime object
-    if i != 0:                                     # Avoid index OOR error
-        if row[0].year != data_raw[i-1][0].year:   # Current entry is new year
-            yearly_split.append(data_raw[year_start:i])
-            year_start = i
-
-# We need to align all the years around some date for consistency. Middle of
-# the year (1. July) will be our centering date from which each year must have 
-# same amount of days prior and after.
-
-# For each year find the index closest to 1. July (centering date)
-midyear_idx = []
-for year in yearly_split: 
-    midyear = dt.date(year[0][0].year, 7, 1)    # Define 1.7 of given year
-    midyear_d = dt.timedelta(days=365)          # Define max time delta
-    closest = None
-    for i, day in enumerate(year):              # For each day update delta
-       if abs(day[0]-midyear) < midyear_d:      # if less than before
-           midyear_d = abs(day[0]-midyear)
-           index = i
-    midyear_idx.append(index)
-
-# Find minimum num. of days before and after midyear across all the years
-# the maximum should be (~130)
-def get_year_range(yearly_split):
-    print('new fun')
-    limits = [np.inf, np.inf]          # N of days before/after midyear
-    shortest_years = [0, 0]            # idx of shortest year/years
-    for i, year in enumerate(yearly_split):
-        days_before = len(year[0:midyear_idx[i]])
-        if days_before < limits[0]:
-            limits[0] = days_before    # Least days period midyear across data
-            shortest_years[0] = (i)    # IDX of the shortest year
-            
-        days_after = len(year[midyear_idx[i]+1:])
-        if days_after < limits[1]:
-            limits[1] = days_after     # Least days after midyear across data
-            shortest_years[1] = (i)    # IDX of the shortest year
-    
-    # If some of the shortest years in dataset are much shorter than maximum 
-    # (~130), We need to ommit it from the dataset
-    for i, days in enumerate(limits):
-        if days < 120:
-            print(f'Year {yearly_split[shortest_years[i]][0][0].year} only',
-                  f' has {days} trading days before/after the midyear',
-                  '\n    - deleting from the dataset')
-            yearly_split.pop(shortest_years[i])      # Delete year too short
-            midyear_idx.pop(shortest_years[i])       # Delete it's IDX 
-            limits = get_year_range(yearly_split)    # Recursive function call
-            break
-
-    return limits
-
-yearly_range = get_year_range(yearly_split)
-
-# Cut the lengths of all the longer years
-for i, year in enumerate(yearly_split):
-    start_idx = midyear_idx[i] - yearly_range[0]
-    end_idx = midyear_idx[i] + yearly_range[1] + 1
-    yearly_split[i] = year[start_idx : end_idx]
-yearly_split = np.array(yearly_split)                # Turn into np array  
-
-# Separate timestamps, hold first and last year of entire historical range,
-# flatten all data to conduct time series decomposition
-dates = yearly_split[:, :, 0]
-yearly_split = yearly_split[:, :, 1].astype(float)
-history_range = (dates[0][0].year, dates[-1][0].year)   
 
 
-# Create dataframe with appropriate column names
-columns = np.arange(history_range[0], history_range[1]+1)
-data = pd.DataFrame(data=yearly_split.T, columns=columns)
-print(data.head(5))
-print('Total shape of dataframe: ', data.shape)
-data.plot()
-plt.xlabel('Trade day of a year')
-plt.ylabel('Price USD')
-
-
-    #%% Conduct seasonal and trend decomposition. Parameters are currently based on
-    #   domain knowledge and empirical testing.
+# Conduct seasonal and trend decomposition
 def get_seasonals(data_frame, **kwargs):
-    ''', period=249, seasonal=11, trend = 251,
-                  robust=False, **kwargs'''
     n_cols = data_frame.shape[1]
     n_rows = data_frame.shape[0]
     data_array = data_frame.to_numpy().T.flatten()
     stl = STL(data_array, **kwargs)
     result_stl = stl.fit()
-#   result_stl.plot()
+    result_stl.plot()
     seasonals_array = result_stl.seasonal.reshape((n_cols, n_rows))
-    seasonals = pd.DataFrame(data=seasonals_array.T, columns=columns)
+    seasonals = pd.DataFrame(data=seasonals_array.T,
+                             columns=data_frame.columns)
     return seasonals
 
 #   To have a statistically more reliable seasonal dependencies we can average
@@ -168,72 +70,20 @@ def plot_emas(emas):
     months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug',
               'Sep', 'Oct', 'Nov', 'Dec']
     plt.xticks(lbl_idx, months)    
-'''
-seasonals = get_seasonals(data)    
-emas = get_ema_df(seasonals)
-plot_emas(emas)        
-'''
 
-#%%
-def score_seasonals(emas):
-    # Scale all the whole data set to -1/1 range
-    scaler = MinMaxScaler((-1, 1))   
-    original_shape = emas.shape
-    scaled = scaler.fit_transform(emas.to_numpy().flatten().reshape(-1, 1))
-    scaled = pd.DataFrame(scaled.reshape(original_shape),
-                          columns=emas.columns)
 
-    # Calculate MAPE        
-    yearly_mape = []
-    for i, col in enumerate(scaled):         
-        if i == 0: continue    # Skip first column
-        diff = (scaled.iloc[:, i] - scaled.iloc[:, i-1]) / scaled.iloc[:, i]
-        diff = diff.abs()
-        MAPE = diff.mean()
-        yearly_mape.append(MAPE)
+if __name__ == "__main__":
     
-    # Turn to ndarray and remove outliers (2008 crash)
-    yearly_mape = np.array(yearly_mape)
-    mean = yearly_mape.mean()
-    for i, entry in enumerate(yearly_mape):
-        if entry > 10 * mean:
-            print(f' Deleting MAPE of {entry:.2f} that is much higher than avg ',
-                  f'\n{mean:.2f}. Year: {scaled.columns[i]}')
-            yearly_mape = np.delete(yearly_mape, i)
-            
-    # Return total error for all other years        
-    return yearly_mape.mean()         
-   
-#%%
-# Set of parmeters
-params = {'period'       : [249],
-          'seasonal'     : list(range(7, 56, 4)),
-          'trend'        : list(range(251, 351, 20)),
-          'robust'       : [False, True],
-          'low_pass'     : list(range(251, 351, 20)),
-          'seasonal_deg' : [0, 1],
-          'trend_deg'    : [0, 1],
-          'low_pass_deg' : [0, 1]}
-                           
-def param_iterate(params):
-    keys = params.keys()
-    vals = params.values()
-    combinations = list(product(*vals))
-    for i, c in enumerate(combinations):
-        combinations[i] = dict(zip(keys, c))
-    return combinations    
+    # Open given instrument historical data, get seasonal with default params
+    instrument_name = 'usdx'
+    data = pd.read_csv(f'..\data\\{instrument_name}_historical_tidy.csv')
     
-params_combinations = param_iterate(params)
-total_iters = len(params_combinations)
-scores = []
-for i, c in enumerate(params_combinations):
-    print(i+1,'/',total_iters)
-    seasonals = get_seasonals(data,**c)    
+    # Conduct seasonal and trend decomposition.
+    benchmark_params = {'period':data.shape[0],
+                        'seasonal':11,
+                        'robust':False}
+    seasonals = get_seasonals(data)    
     emas = get_ema_df(seasonals)
-    score = score_seasonals(emas)
-    print(score)
-    scores.append(score)
-
-#%%
-scores_series = pd.Series(scores, name='scores')
-scores_series.to_csv('data\\optimisation_scores.csv')
+    plot_emas(emas)    
+    
+    emas.to_csv(f'..\data\\{instrument_name}_seasonal_emas.csv')
