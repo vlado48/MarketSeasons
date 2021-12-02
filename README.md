@@ -20,3 +20,16 @@ maintaining statistical strength.
 
 <img src="https://user-images.githubusercontent.com/34378363/143444474-58c29333-f9a0-4ead-abf2-28816aa6e095.png" width=50% height=50%>
 
+### Hyperparameter tuning
+TSL allows multiple model and regression parameters that affect the results drastically. In hyperparameter optimization criterion has been poustulated in which best score is attained the lower is the MAPE (Mean absolute percentage error) of Seasonal EMA prediction VS the actual seasonal component for the predicted year. This in results provides parameters that decompose only the most constant and consistent seasonal components in the gived financial instrument. 
+
+Seasonal component is obviously much more consistent
+
+<img src="https://user-images.githubusercontent.com/34378363/144416709-d2d22e74-fadd-4d07-bcd7-e4e97ee6612e.png" width=50% height=50%>
+
+We can see that this is a static component of a seasonal tendency and does not change much over the years. Score from 45% to 6% average % cumulative yearly error
+
+<img src="https://user-images.githubusercontent.com/34378363/144416724-49e06906-8ab5-4891-9982-d714b12d2164.png" width=50% height=50%>
+
+
+
