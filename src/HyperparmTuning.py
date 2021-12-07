@@ -6,6 +6,9 @@ from Seasonals import get_seasonals, get_ema_df, plot_emas
 
 
 def score_seasonals(emas):
+    '''
+    Scoring functions that accepts pd.DataFrame and return avg MAPE over years
+    '''
     # Scale all the whole data set to -1/1 range
     scaler = MinMaxScaler((-1, 1))   
     original_shape = emas.shape
@@ -35,6 +38,7 @@ def score_seasonals(emas):
     return yearly_mape.mean()     
     
 def param_iterate(params):
+    '''Returns a combinations of all parameters to grid search through'''
     keys = params.keys()
     vals = params.values()
     combinations = list(product(*vals))
@@ -42,8 +46,27 @@ def param_iterate(params):
         combinations[i] = dict(zip(keys, c))
     return combinations      
 
+def grid_search(params, emas_dataframe):
+    '''Conducts grid search and return the best scored set of parameters'''         
+    params_combinations = param_iterate(params)
+    total_iters = len(params_combinations)
+    scores = np.zeros(total_iters)
+    for i, c in enumerate(params_combinations):
+        print(i+1,'/',total_iters)
+        seasonals = get_seasonals(data,**c)    
+        emas = get_ema_df(seasonals)
+        score = score_seasonals(emas)
+        scores[i] = score
+    
+    best_score_idx = scores.argmin()
+    best_params = params_combinations[best_score_idx]
+    print(f'Parameters giving best score of {scores.min()} are: ',best_params)
+    
+    return best_params
+
 if __name__ == "__main__":
-    # Open instruments cleaned historical data dataframe
+    
+    # Open instrument's cleaned historical data dataframe
     instrument_name = 'usdx'
     data = pd.read_csv(f'data\\{instrument_name}_historical_tidy.csv')
     
@@ -59,35 +82,22 @@ if __name__ == "__main__":
               'trend_deg'    : [0, 1],
               'low_pass_deg' : [0, 1]}
                                
-         
-    params_combinations = param_iterate(params)
-    total_iters = len(params_combinations)
-    scores = np.zeros(total_iters)
-    for i, c in enumerate(params_combinations):
-        print(i+1,'/',total_iters)
-        seasonals = get_seasonals(data,**c)    
-        emas = get_ema_df(seasonals)
-        score = score_seasonals(emas)
-        scores[i] = score
+    benchmark_params = {'period':data.shape[0],
+                        'seasonal':11,
+                        'robust':False}
     
-    best_score_idx = scores.argmin()
-    best_params = params_combinations[best_score_idx]
-    print(f'Parameters giving best score of {scores.min()} are: ',best_params)
+    # Conduct grid search
+    best_params = grid_search(params, data)
 
-#%% Conduct comparison vs benchmark params
-benchmark_params = {'period':data.shape[0],
-                    'seasonal':11,
-                    'robust':False}
-
-
-seasonals_benchmark = get_seasonals(data,**benchmark_params)   
-seasonals_optimized = get_seasonals(data,**best_params)    
-
-emas_benchmark = get_ema_df(seasonals_benchmark)
-plot_emas(emas_benchmark)
-
-emas_optimized = get_ema_df(seasonals_optimized)
-plot_emas(emas_optimized)
-
-print(f'Benchmark score: {score_seasonals(emas_benchmark)}',
-      f'\nOptimized score: {score_seasonals(emas_optimized)}')
+    # Comparison vs benchmark params   
+    seasonals_benchmark = get_seasonals(data,**benchmark_params)   
+    seasonals_optimized = get_seasonals(data,**best_params)    
+    
+    emas_benchmark = get_ema_df(seasonals_benchmark)
+    plot_emas(emas_benchmark)
+    
+    emas_optimized = get_ema_df(seasonals_optimized)
+    plot_emas(emas_optimized)
+    
+    print(f'Benchmark score: {score_seasonals(emas_benchmark)}',
+          f'\nOptimized score: {score_seasonals(emas_optimized)}')

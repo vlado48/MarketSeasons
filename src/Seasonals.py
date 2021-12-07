@@ -6,6 +6,7 @@ from statsmodels.tsa.seasonal import STL
 
 # Conduct seasonal and trend decomposition
 def get_seasonals(data_frame, **kwargs):
+    '''Returns a timeseries of seasonal component of original timeseries'''
     n_cols = data_frame.shape[1]
     n_rows = data_frame.shape[0]
     data_array = data_frame.to_numpy().T.flatten()
@@ -22,6 +23,9 @@ def get_seasonals(data_frame, **kwargs):
 #   only past few years with more weigth given to more recent years.
 #   Create exponential moving average from yearly seasonal tendencies
 def get_ema_df(data, order=5, alpha=0.08):
+    '''
+    Returns a dataframe of averaged (EMA) seasonal tendencies.
+    '''
     n_cols = data.shape[1]
     n_rows = data.shape[0]    
     if n_cols < order:
@@ -48,6 +52,7 @@ def get_ema_df(data, order=5, alpha=0.08):
 # Get exponential average of seasonal tendecies and plot them to see change 
 # over time
 def plot_emas(emas):
+    '''Returns a plot showing evolution of seasonal averages in time.'''
     n_cols = emas.shape[1]   
     n_rows = emas.shape[0]   
     plt.figure()
